@@ -4,6 +4,8 @@
 #include <stdio.h> 
 #include <stdlib.h>
 
+typedef double decimal;
+
 /*
     For illustration a uniform distribution is shown
 */
@@ -28,10 +30,10 @@ struct params* getParams(int argc, char** argv){
 void printParams(FILE* file, struct params* params){
     fprintf(file, "n=%d", params->n);
 }
-double generateSample(struct params* params){
-    return ((double)rand() / RAND_MAX) * params->n;
+decimal generateSample(struct params* params){
+    return ((decimal)rand() / RAND_MAX) * params->n;
 }
-double CDF(struct params* params, double x){
+decimal CDF(struct params* params, decimal x){
     x /= params-> n;
     if (x <0) return 0;
     if (x >=1) return 1;
