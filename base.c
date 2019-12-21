@@ -6,8 +6,18 @@ C file to test CDF functions
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
+#include <time.h>
+#include <windows.h>
 #include "resourcestack.h"
 #include "func.h"
+
+
+struct histogram{
+    decimal underflow;
+    decimal overflow;
+    decimal* values;
+    int size;
+};
 
 FILE* openFile(char* directory, char*fileName, char* mode){
     char* full = malloc(sizeof(char) * FILENAME_MAX);
@@ -24,19 +34,10 @@ void closeFile(void* file){
     fclose(file);
 }
 
-decimal calcChiSquared(int count, decimal* observedArray, decimal* expectedArray){
-    decimal chiSquared = 0;
-    for (int i =0; i<count; i++){
-        decimal observed = observedArray[i];
-        decimal expected = expectedArray[i];
-        decimal value = observed - expected;
-        value = value * value;
-        if (expected != 0)chiSquared += value/ expected;
-        // else chiSquared += value;
-    }
-    return chiSquared;
-}
+
+int performTests(FILE* output, char* linePrefix, int count, decimal* observedArr, decimal* expectedArr);
 int main(int argc, char** argv){
+    srand(time(NULL));
     INTIALIZE_RESOURCE_MANAGER;
     if (argc <= 1){
         printf(
@@ -49,7 +50,7 @@ int main(int argc, char** argv){
         );
         R_EXIT_SUCCESS;
     }
-    if (argc-1 < 4+PARAM_COUNT){
+    if (argc-1 < 5+PARAM_COUNT){
         printf("Missing parameters");
         R_EXIT_FAILURE;
     }
@@ -72,31 +73,36 @@ int main(int argc, char** argv){
         printf("Invalid grain size");
         R_EXIT_FAILURE
     }
-
+    CreateDirectory(directoryName, NULL);
     
     int grainCount = (max-min)/grainSize;
+    grainSize = (max-min)/grainCount;
     //Array for cdf values
     //arr[i] = P(X < min + grainSize * i)
     decimal* expectedCDFValues = calloc(grainCount+1, sizeof(decimal));
     decimal* sampleCDFValues = calloc(grainCount+1, sizeof(decimal));
-    decimal* residualCDFValues = calloc(grainCount+1, sizeof(decimal));
 
     //Array for histogram (includes underflow and overflow)
-    //arr[0] = P(X < min)
-    //arr[i] = P(min + grainSize * (i-1) < X < min + grainSize * i) for i between 1 and grainCount (inclusive)
-    //arr[grainCount+1] = P(X > min + grainSize * grainCount)
-    decimal* expectedHistogram = calloc(grainCount + 2, sizeof(decimal));
-    decimal* sampleHistogram = calloc(grainCount + 2, sizeof(decimal));
-    decimal* residualHistogram = calloc(grainCount + 2, sizeof(decimal));
+    //arr[i] = P(min + grainSize * i < X < min + grainSize * (i+1))
+    struct histogram expectedHistogram={
+        .underflow = 0,
+        .overflow =0,
+        .size = grainCount,
+        .values = calloc(grainCount, sizeof(decimal))
+    };
+    struct histogram sampleHistogram={
+        .underflow = 0,
+        .overflow =0,
+        .size = grainCount,
+        .values = calloc(grainCount, sizeof(decimal))
+    };
 
 
     PUSH_RESOURCE_MESSAGE(expectedCDFValues, free, "Unable to allocate expectedCDFValues");
     PUSH_RESOURCE_MESSAGE(sampleCDFValues, free, "Unable to allocate sampleCDFValues");
-    PUSH_RESOURCE_MESSAGE(residualCDFValues, free, "Unable to allocate residualCDFValues");
 
-    PUSH_RESOURCE_MESSAGE(expectedHistogram, free, "Unable to allocate expectedHistogram");
-    PUSH_RESOURCE_MESSAGE(sampleHistogram, free, "Unable to allocate sampleHistogram");
-    PUSH_RESOURCE_MESSAGE(residualHistogram, free, "Unable to allocate residualHistogram");
+    PUSH_RESOURCE_MESSAGE(expectedHistogram.values, free, "Unable to allocate expectedHistogram");
+    PUSH_RESOURCE_MESSAGE(sampleHistogram.values, free, "Unable to allocate sampleHistogram");
 
 
 
@@ -104,88 +110,63 @@ int main(int argc, char** argv){
         expectedCDFValues[i] = CDF(params, min + grainSize * i);
     }
 
-    expectedHistogram[0] = sampleSize * expectedCDFValues[0];
-    for (int i = 1; i< grainCount+1; i++){
-        expectedHistogram[i] = sampleSize * (expectedCDFValues[i] - expectedCDFValues[i-1]);
+    expectedHistogram.underflow = expectedCDFValues[0];
+    for (int i = 0; i< grainCount; i++){
+        expectedHistogram.values[i] = (expectedCDFValues[i+1] - expectedCDFValues[i]) / grainSize;
     }
-    expectedHistogram[grainCount+1] = sampleSize*(1-expectedCDFValues[grainCount]); 
+    expectedHistogram.overflow = 1-expectedCDFValues[grainCount]; 
 
 
-
-    for (int i = 0; i< grainCount+2; i++){
-        //sampleHistogram[i] = (decimal) 0;
-    }
     for (int i =0 ; i<sampleSize; i++){
         decimal value = generateSample(params);
         int pos = floor((value - min)/grainSize);
-        if (pos < 0) pos = 0;
-        else if(pos <grainCount) pos = pos + 1;
-        else pos = grainCount + 1;
-        sampleHistogram[pos]++;
+        if (pos < 0) sampleHistogram.underflow++;
+        else if(pos <grainCount) sampleHistogram.values[pos]++;
+        else pos = sampleHistogram.overflow++;
     }
 
-    sampleCDFValues[0] = sampleHistogram[0]/sampleSize;
-    for (int i = 1; i< grainCount+1; i++){
-        sampleCDFValues[i] = sampleCDFValues[i-1] + sampleHistogram[i]/sampleSize;
+    sampleHistogram.underflow /= sampleSize;
+    sampleHistogram.overflow /= sampleSize;
+    for (int i = 0; i < grainCount; i++){
+        sampleHistogram.values[i]/=sampleSize;
+    }
+
+    sampleCDFValues[0] = sampleHistogram.underflow;
+    for (int i = 0; i< grainCount; i++){
+        sampleCDFValues[i+1] = sampleCDFValues[i] + sampleHistogram.values[i];
+        sampleHistogram.values[i] /= grainSize;
     }
 
 
-    //Performing goodness of fit tests
-    for (int i =0 ; i<grainCount+1; i++){
-        residualCDFValues[i] = sampleCDFValues[i] - expectedCDFValues[i];
-    }
-    for (int i =0 ; i<grainCount+2; i++){
-        residualHistogram[i] = sampleHistogram[i] - expectedHistogram[i];
-    }
-
-    decimal chiSquaredCDF = sampleSize * calcChiSquared(grainCount+1, sampleCDFValues, expectedCDFValues);
-    decimal chiSquaredHistogram = calcChiSquared(grainCount+2, sampleHistogram, expectedHistogram);
-
-    decimal residualSquaredCDFValues = 0;
-    decimal residualSquaredHistogram = 0;
-    for (int i = 0; i<grainCount+1; i++){
-        residualSquaredCDFValues += residualCDFValues[i]*residualCDFValues[i];
-    }
-    residualSquaredCDFValues *= sampleSize;
-    residualSquaredCDFValues *= sampleSize;
-    for (int i = 0; i<grainCount+2; i++){
-        residualSquaredHistogram += residualHistogram[i]*residualHistogram[i];
-    }
 
     //FILE *file_samples = openFile(directoryName, "samples.txt", "w");
     FILE *file_summary = openFile(directoryName, "summary.txt", "w");
 
-    FILE *file_expectedHistogram = openFile(directoryName, "expectedHistogram.txt", "w");
-    FILE *file_sampleHistogram = openFile(directoryName, "sampleHistogram.txt", "w");
-    FILE *file_residualHistogram = openFile(directoryName, "residualHistogram.txt", "w");
+    FILE *file_histogram = openFile(directoryName, "histogram.txt", "w");
 
-    FILE *file_expectedCDF = openFile(directoryName, "expectedCDF.txt", "w");
-    FILE *file_sampleCDF = openFile(directoryName, "sampleCDF.txt", "w");
-    FILE *file_residualCDF = openFile(directoryName, "residualCDF.txt", "w");
+    FILE *file_CDFValues = openFile(directoryName, "CDFValues.txt", "w");
     
 
     PUSH_RESOURCE_MESSAGE(file_summary, closeFile, "can't open summary.txt");
 
-    PUSH_RESOURCE_MESSAGE(file_expectedHistogram, closeFile, "can't open expectedHistogram.txt");
-    PUSH_RESOURCE_MESSAGE(file_sampleHistogram, closeFile, "can't open sampleHistogram.txt");
-    PUSH_RESOURCE_MESSAGE(file_residualHistogram, closeFile, "can't open residualHistogram.txt");
+    PUSH_RESOURCE_MESSAGE(file_histogram, closeFile, "can't open histogram.txt");
 
-    PUSH_RESOURCE_MESSAGE(file_expectedCDF, closeFile, "can't open expectedCDF.txt");
-    PUSH_RESOURCE_MESSAGE(file_sampleCDF, closeFile, "can't open sampleCDF.txt");
-    PUSH_RESOURCE_MESSAGE(file_residualCDF, closeFile, "can't open residualCDF.txt");
+    PUSH_RESOURCE_MESSAGE(file_CDFValues, closeFile, "can't open CDFValues.txt");
     
 
-    for(int i =0; i< grainCount+2; i++){
-        fprintf(file_expectedHistogram, "%f\n", (double) expectedHistogram[i]);
-        fprintf(file_sampleHistogram, "%f\n", (double)sampleHistogram[i]);
-        fprintf(file_residualHistogram, "%f\n", (double)residualHistogram[i]);
+    fprintf(file_histogram, "Expected\tObserved\n");
+    fprintf(file_histogram, "%f\t%f\n", (double) expectedHistogram.underflow, (double) sampleHistogram.underflow);
+    for(int i =0; i< grainCount; i++){
+        fprintf(file_histogram, "%f\t%f\n", (double) expectedHistogram.values[i], (double)sampleHistogram.values[i]);
     }
-    for(int i=0; i<grainCount+1; i++){
-        fprintf(file_expectedCDF, "%f\n", (double) expectedCDFValues[i]);
-        fprintf(file_sampleCDF, "%f\n", (double) sampleCDFValues[i]);
-        fprintf(file_residualCDF, "%f\n", (double) residualCDFValues[i]);
-    }
+    fprintf(file_histogram, "%f\t%f\n", (double) expectedHistogram.overflow, (double) sampleHistogram.overflow);
 
+    fprintf(file_CDFValues, "Expected\tObserved\n");
+    for(int i=0; i<grainCount+1; i++){
+        fprintf(file_CDFValues, "%f\t%f\n", (double) expectedCDFValues[i], (double) sampleCDFValues[i]);
+    }
+    FREE_RESOURCE(file_histogram);
+    FREE_RESOURCE(file_CDFValues);
     
 
 
@@ -202,16 +183,83 @@ int main(int argc, char** argv){
     fprintf(file_summary, "\n");
     
     fprintf(file_summary, "CDF\n");
-    fprintf(file_summary, "\tChi squared: %f\n", (double) chiSquaredCDF);
-    fprintf(file_summary, "\tResidual squared: %f\n", (double) residualSquaredCDFValues);
-    fprintf(file_summary, "\tResidual standard deviation: %f\n", sqrt(residualSquaredCDFValues/sampleSize));
+    performTests(file_summary, "\t", grainCount+1, sampleCDFValues, expectedCDFValues);
 
     fprintf(file_summary, "\n");
 
     fprintf(file_summary, "Histogram\n");
-    fprintf(file_summary, "\tChi squared: %f\n", (double) chiSquaredHistogram);
-    fprintf(file_summary, "\tResidual squared: %f\n", (double) residualSquaredHistogram);
-    fprintf(file_summary, "\tResidual standard deviation: %f\n", sqrt(residualSquaredHistogram/sampleSize));
+    performTests(file_summary, "\t", grainCount, sampleHistogram.values, expectedHistogram.values);
 
     R_EXIT_SUCCESS
+}
+
+int performTests(FILE* output, char* linePrefix, int count, decimal* observedArr, decimal* expectedArr){
+    if (count <=0) return 1;
+    #define PRINT_LINE(...) fprintf(output, linePrefix); fprintf(output, __VA_ARGS__); fprintf(output, "\n");
+    decimal observedTotal = 0, expectedTotal = 0;
+    decimal observedSumOfSquares = 0, expectedSumOfSquares = 0;
+    decimal residueMin = 0, residueMax = 0;
+    decimal residueAverage = 0, residueAbsAverage = 0, residueSumOfSquares = 0;
+
+    decimal standardError = 0;
+
+    decimal rSquaredObserved = 0, rSquaredExpected = 0;
+
+    for (int i =0 ; i<count; i++){
+        decimal observed = observedArr[i];
+        decimal expected = expectedArr[i];
+        decimal residue = expected - observed;
+
+        observedTotal += observed;
+        expectedTotal += expected;
+
+        observedSumOfSquares += observed * observed;
+        expectedSumOfSquares += expected * expected;
+
+        residueAverage += residue;
+        residueAbsAverage += residue <0 ? -residue: residue;
+        residueSumOfSquares += residue * residue;
+
+        if (residue > residueMax){
+            residueMax = residue;
+        }
+        if (residue < residueMin){
+            residueMin = residue;
+        }
+    }
+
+    observedSumOfSquares -= observedTotal * observedTotal / count;
+    expectedSumOfSquares -= expectedTotal * expectedTotal / count;
+
+    rSquaredObserved = 1 - residueSumOfSquares / observedSumOfSquares;
+    rSquaredExpected = 1 - residueSumOfSquares / expectedSumOfSquares;
+
+    residueAverage /= count;
+    residueAbsAverage /= count;
+
+    standardError = sqrt(residueSumOfSquares/count);
+
+    PRINT_LINE("count: %d", count);
+
+    PRINT_LINE("Totals:");
+    PRINT_LINE("\tExpected: %f", (double) expectedTotal);
+    PRINT_LINE("\tObserved: %f", (double) observedTotal);
+
+    PRINT_LINE("Sum of Squares:");
+    PRINT_LINE("\tExpected: %f", (double)expectedSumOfSquares);
+    PRINT_LINE("\tObserved: %f", (double)observedSumOfSquares);
+
+    PRINT_LINE("Residues:");
+    PRINT_LINE("\tMin:    %f", (double) residueMin);
+    PRINT_LINE("\tMax:     %f", (double) residueMax);
+    PRINT_LINE("\tMean:    %f", (double) residueAverage);
+    PRINT_LINE("\t|Mean|:  %f", (double) residueAbsAverage);
+    PRINT_LINE("\tSum of Squares: %f", (double) residueSumOfSquares);
+    PRINT_LINE("\tStd Error: %f", (double)standardError);
+
+    PRINT_LINE("R-squared:");
+    PRINT_LINE("\tExpected: %f", (double) rSquaredExpected);
+    PRINT_LINE("\tObserved: %f", (double) rSquaredObserved);
+
+    #undef PRINT_LINE
 }

@@ -4,7 +4,7 @@
 #include <stdio.h>
 #define MAX_RESOURCE_COUNT 20
 
-#define INTIALIZE_RESOURCE_MANAGER struct resource_stack resource_stack; resource_stack.size = 0;
+#define INTIALIZE_RESOURCE_MANAGER struct resource_stack resource_stack={.size=0};
 #define R_EXIT_FAILURE freeAllResources(&resource_stack); return 1;
 #define R_EXIT_SUCCESS freeAllResources(&resource_stack); return 0;
 
