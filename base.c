@@ -42,6 +42,7 @@ int main(int argc, char** argv){
     if (argc <= 1){
         printf(
             "Parameters:"
+            " [output file name]"
             " [sample size]"
             " [min]"
             " [max]"
@@ -78,12 +79,14 @@ int main(int argc, char** argv){
     int grainCount = (max-min)/grainSize;
     grainSize = (max-min)/grainCount;
     //Array for cdf values
-    //arr[i] = P(X < min + grainSize * i)
+    //arr[i] = P(X <= min + grainSize * i)
     decimal* expectedCDFValues = calloc(grainCount+1, sizeof(decimal));
     decimal* sampleCDFValues = calloc(grainCount+1, sizeof(decimal));
 
     //Array for histogram (includes underflow and overflow)
-    //arr[i] = P(min + grainSize * i < X < min + grainSize * (i+1))
+    //arr[i] = P(min + grainSize * i < X <= min + grainSize * (i+1))
+    //underflow = P(X <= min)
+    //overflow = P(X > max)
     struct histogram expectedHistogram={
         .underflow = 0,
         .overflow =0,
@@ -119,10 +122,10 @@ int main(int argc, char** argv){
 
     for (int i =0 ; i<sampleSize; i++){
         decimal value = generateSample(params);
-        int pos = floor((value - min)/grainSize);
-        if (pos < 0) sampleHistogram.underflow++;
-        else if(pos <grainCount) sampleHistogram.values[pos]++;
-        else pos = sampleHistogram.overflow++;
+        int pos = ceil((value - min)/grainSize);
+        if (pos <= 0) sampleHistogram.underflow++;
+        else if(pos <=grainCount) sampleHistogram.values[pos-1]++;
+        else sampleHistogram.overflow++;
     }
 
     sampleHistogram.underflow /= sampleSize;
